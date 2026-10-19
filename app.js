@@ -8,12 +8,11 @@ const TradeOfferManager = require('steam-tradeoffer-manager');
 const SteamTotp = require('steam-totp');
 
 console.log('==============================================');
-console.log('   Data Exchange Pipeline - Pipeline Node Active');
+console.log('   Data Exchange Pipeline - Safe 10s 24/7 Mode');
 console.log('==============================================\n');
 
 require("dotenv").config();
 
-// Määritetään asetukset ympäristömuuttujista
 const config = {
     appId: parseInt(process.env.TARGET_APP_ID) || 440,
     contextId: parseInt(process.env.TARGET_CONTEXT_ID) || 2,
@@ -48,7 +47,6 @@ for (let i = 0; i < 2; i++) {
     });
 }
 
-// Render HTTP monitoring port interface
 const PORT = process.env.PORT || 10000;
 http.createServer((req, res) => {
 	res.writeHead(200, { "Content-Type": "text/plain" });
@@ -108,12 +106,12 @@ async function getInventoryWithRetry(manager, appId, contextId, retries = 5) {
             });
             return inventory;
         } catch (err) {
-            const penaltyTime = 3000 + (i * 2500);
-            console.warn(`Haku epäonnistui (${err.message}). Odotetaan ${penaltyTime / 1000}s...`);
+            const penaltyTime = 4000 + (i * 3000);
+            console.warn(`Haku pätki (${err.message}). Odotetaan ${penaltyTime / 1000}s...`);
             await wait(penaltyTime);
         }
     }
-    throw new Error('Tietueiden haku epäonnistui lopullisesti.');
+    throw new Error('Tietueiden haku epäonnistui useista yrityksistä huolimatta.');
 }
 
 async function confirmOfferWithRetry(community, identitySecret, offerId, retries = 5) {
@@ -136,9 +134,10 @@ async function confirmOfferWithRetry(community, identitySecret, offerId, retries
     throw new Error('Mobiilivahvistus epäonnistui.');
 }
 
-async function acceptOfferWithRetry(manager, offerId, retries = 3) {
+async function acceptOfferWithRetry(manager, offerId, retries = 5) {
     for (let i = 0; i < retries; i++) {
         try {
+            await wait(2500); 
             const offer = await new Promise((resolve, reject) => {
                 manager.getOffer(offerId, (err, off) => {
                     if (err) return reject(err);
@@ -169,8 +168,8 @@ async function startTradeLoop(fromIndex, toIndex) {
         const inventory = await getInventoryWithRetry(managers[fromIndex], config.appId, config.contextId);
         
         if (!inventory || inventory.length === 0) {
-            console.log(`[Tili ${fromIndex + 1}] Säiliö tyhjä. Vaihdetaan siirron suuntaa 10 sekunnin kuluttua...`);
-            await wait(10000);
+            console.log(`[Tili ${fromIndex + 1}] Säiliö tyhjä. Vaihdetaan siirron suuntaa 15 sekunnin kuluttua...`);
+            await wait(15000);
             return startTradeLoop(toIndex, fromIndex);
         }
 
@@ -200,15 +199,19 @@ async function startTradeLoop(fromIndex, toIndex) {
 
         console.log(`✅ Datapaketti siirretty onnistuneesti solmujen välillä!`);
         
-        console.log('Odotetaan 3.5 sekuntia ennen suunnanvaihtoa...');
-        await wait(3500);
+        // PUDOTETTU KIERROSVIIVE TASAN 10 SEKUNTIIN OPTIMIVAUHTIA VARTEN
+        console.log('Odotetaan 10 sekuntia ennen suunnanvaihtoa...');
+        await wait(10000);
         
         return startTradeLoop(toIndex, fromIndex);
 
     } catch (err) {
         console.error(`❌ Kriittinen poikkeus siirtosilmukassa: ${err.message}`);
-        console.log('Odotetaan 10 sekuntia ennen palautusyritystä...');
-        await wait(10000);
+        
+        // JÄÄHYTILA: Jos haku kaatuu HTTP 429 -virheeseen, pidetään 5 minuutin tauko ennen automaattista palautusta
+        console.log('⚠️ Järjestelmä laukaisi suojatilan. Levätään 5 minuuttia palvelimen rauhoittamiseksi...');
+        await wait(300000); 
+        
         return startTradeLoop(fromIndex, toIndex);
     }
 }
