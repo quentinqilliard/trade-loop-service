@@ -106,7 +106,7 @@ async function getInventoryWithRetry(manager, appId, contextId, retries = 5) {
             });
             return inventory;
         } catch (err) {
-            const penaltyTime = 4000 + (i * 3000);
+            const penaltyTime = 3000 + (i * 2000); // Hieman lyhennetty virheen odotusaika
             console.warn(`Haku pätki (${err.message}). Odotetaan ${penaltyTime / 1000}s...`);
             await wait(penaltyTime);
         }
@@ -117,7 +117,7 @@ async function getInventoryWithRetry(manager, appId, contextId, retries = 5) {
 async function confirmOfferWithRetry(community, identitySecret, offerId, retries = 5) {
     for (let i = 0; i < retries; i++) {
         try {
-            await wait(5000);
+            await wait(1500); // NOPEUTETTU: 5000ms -> 1500ms ennen vahvistusta
             await new Promise((resolve, reject) => {
                 community.acceptConfirmationForObject(identitySecret, offerId, (err) => {
                     if (err) return reject(err);
@@ -128,7 +128,7 @@ async function confirmOfferWithRetry(community, identitySecret, offerId, retries
             return;
         } catch (err) {
             console.warn(`[Turvavahvistus] Yritys ${i + 1} epäonnistui: ${err.message}`);
-            await wait(5000); 
+            await wait(3000); // NOPEUTETTU: Virheodotus 5000ms -> 3000ms
         }
     }
     throw new Error('Mobiilivahvistus epäonnistui.');
@@ -137,7 +137,7 @@ async function confirmOfferWithRetry(community, identitySecret, offerId, retries
 async function acceptOfferWithRetry(manager, offerId, retries = 5) {
     for (let i = 0; i < retries; i++) {
         try {
-            await wait(2500); 
+            await wait(750); // NOPEUTETTU: 2500ms -> 750ms ennen vastaanottoa
             const offer = await new Promise((resolve, reject) => {
                 manager.getOffer(offerId, (err, off) => {
                     if (err) return reject(err);
@@ -155,7 +155,7 @@ async function acceptOfferWithRetry(manager, offerId, retries = 5) {
             return;
         } catch (err) {
             console.warn(`[Vastaanottaja] Vastaanotto epäonnistui, yritetään uudelleen: ${err.message}`);
-            await wait(3000);
+            await wait(2000); // NOPEUTETTU: Virheodotus 3000ms -> 2000ms
         }
     }
     throw new Error('Siirron hyväksyminen kohteessa epäonnistui.');
@@ -168,12 +168,12 @@ async function startTradeLoop(fromIndex, toIndex) {
         const inventory = await getInventoryWithRetry(managers[fromIndex], config.appId, config.contextId);
         
         if (!inventory || inventory.length === 0) {
-            console.log(`[Tili ${fromIndex + 1}] Säiliö tyhjä. Vaihdetaan siirron suuntaa 15 sekunnin kuluttua...`);
-            await wait(15000);
+            console.log(`[Tili ${fromIndex + 1}] Säiliö tyhjä. Vaihdetaan siirron suuntaa 3 sekunnin kuluttua...`);
+            await wait(3000); // NOPEUTETTU: Tyhjän repun odotus 15000ms -> 3000ms
             return startTradeLoop(toIndex, fromIndex);
         }
 
-        const yksittainenEsine = inventory[0];
+        const yksittainenEsine = inventory[0]; // ALKUPERÄINEN ENTISELLÄÄN
         console.log(`Löytyi ${inventory.length} tietuetta solmusta ${fromIndex + 1}. Valittu siirtoon: ${yksittainenEsine.id}`);
         
         const targetTradeUrl = toIndex === 1 ? config.accountB.tradeUrl : config.accountA.tradeUrl;
@@ -199,16 +199,15 @@ async function startTradeLoop(fromIndex, toIndex) {
 
         console.log(`✅ Datapaketti siirretty onnistuneesti solmujen välillä!`);
         
-        // PUDOTETTU KIERROSVIIVE TASAN 10 SEKUNTIIN OPTIMIVAUHTIA VARTEN
-        console.log('Odotetaan 10 sekuntia ennen suunnanvaihtoa...');
-        await wait(10000);
+        console.log('Odotetaan 2 sekuntia ennen suunnanvaihtoa...');
+        await wait(2000); // NOPEUTETTU: Kierrosviive 10000ms -> 2000ms
         
         return startTradeLoop(toIndex, fromIndex);
 
     } catch (err) {
         console.error(`❌ Kriittinen poikkeus siirtosilmukassa: ${err.message}`);
         
-        // JÄÄHYTILA: Jos haku kaatuu HTTP 429 -virheeseen, pidetään 5 minuutin tauko ennen automaattista palautusta
+        // JÄÄHYTILA: Pidetty ennallaan palvelimen suojaamiseksi ongelmatilanteissa
         console.log('⚠️ Järjestelmä laukaisi suojatilan. Levätään 5 minuuttia palvelimen rauhoittamiseksi...');
         await wait(300000); 
         
