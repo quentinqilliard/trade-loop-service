@@ -106,7 +106,7 @@ async function getInventoryWithRetry(manager, appId, contextId, retries = 5) {
             });
             return inventory;
         } catch (err) {
-            const penaltyTime = 100; // Optimoitu: 4000ms -> 100ms
+            const penaltyTime = 3000; // Muutettu: 100ms -> 3000ms
             console.warn(`Haku pätki (${err.message}). Odotetaan ${penaltyTime / 1000}s...`);
             await wait(penaltyTime);
         }
@@ -117,7 +117,7 @@ async function getInventoryWithRetry(manager, appId, contextId, retries = 5) {
 async function confirmOfferWithRetry(community, identitySecret, offerId, retries = 5) {
     for (let i = 0; i < retries; i++) {
         try {
-            await wait(0); // Optimoitu: 5000ms -> 0ms
+            await wait(2500); // Muutettu: 0ms -> 2500ms
             await new Promise((resolve, reject) => {
                 community.acceptConfirmationForObject(identitySecret, offerId, (err) => {
                     if (err) return reject(err);
@@ -128,7 +128,7 @@ async function confirmOfferWithRetry(community, identitySecret, offerId, retries
             return;
         } catch (err) {
             console.warn(`[Turvavahvistus] Yritys ${i + 1} epäonnistui: ${err.message}`);
-            await wait(100); // Optimoitu: 5000ms -> 100ms
+            await wait(3000); // Muutettu: 100ms -> 3000ms
         }
     }
     throw new Error('Mobiilivahvistus epäonnistui.');
@@ -137,7 +137,7 @@ async function confirmOfferWithRetry(community, identitySecret, offerId, retries
 async function acceptOfferWithRetry(manager, offerId, retries = 5) {
     for (let i = 0; i < retries; i++) {
         try {
-            await wait(0); // Optimoitu: 2500ms -> 0ms
+            await wait(2000); // Muutettu: 0ms -> 2000ms
             const offer = await new Promise((resolve, reject) => {
                 manager.getOffer(offerId, (err, off) => {
                     if (err) return reject(err);
@@ -155,7 +155,7 @@ async function acceptOfferWithRetry(manager, offerId, retries = 5) {
             return;
         } catch (err) {
             console.warn(`[Vastaanottaja] Vastaanotto epäonnistui, yritetään uudelleen: ${err.message}`);
-            await wait(100); // Optimoitu: 3000ms -> 100ms
+            await wait(3000); // Muutettu: 100ms -> 3000ms
         }
     }
     throw new Error('Siirron hyväksyminen kohteessa epäonnistui.');
@@ -169,11 +169,11 @@ async function startTradeLoop(fromIndex, toIndex) {
         
         if (!inventory || inventory.length === 0) {
             console.log(`[Tili ${fromIndex + 1}] Säiliö tyhjä. Vaihdetaan siirron suuntaa...`);
-            await wait(100); // Optimoitu: 15000ms -> 100ms
+            await wait(4000); // Muutettu: 100ms -> 4000ms
             return startTradeLoop(toIndex, fromIndex);
         }
 
-        const yksittainenEsine = inventory[0];
+        const yksittainenEsine = inventory[0]; // Palautettu ennalleen ([0] lisätty takaisin)
         console.log(`Löytyi ${inventory.length} tietuetta solmusta ${fromIndex + 1}. Valittu siirtoon: ${yksittainenEsine.id}`);
         
         const targetTradeUrl = toIndex === 1 ? config.accountB.tradeUrl : config.accountA.tradeUrl;
@@ -199,16 +199,16 @@ async function startTradeLoop(fromIndex, toIndex) {
 
         console.log(`✅ Datapaketti siirretty onnistuneesti solmujen välillä!`);
         
-        console.log('Siirrytään suoraan seuraavaan suunnanvaihtoon...');
-        await wait(0); // Optimoitu: 10000ms -> 0ms
+        console.log('Odotetaan hetki ennen seuraavaa siirtoa...');
+        await wait(4000); // Muutettu: 0ms -> 4000ms
         
         return startTradeLoop(toIndex, fromIndex);
 
     } catch (err) {
         console.error(`❌ Kriittinen poikkeus siirtosilmukassa: ${err.message}`);
         
-        console.log('⚠️ Järjestelmä laukaisi virheen. Yritetään heti uudelleen...');
-        await wait(100); // Optimoitu: 300000ms (5 min) -> 100ms
+        console.log('⚠️ Järjestelmä laukaisi virheen. Yritetään uudelleen tauon jälkeen...');
+        await wait(5000); // Muutettu: 100ms -> 5000ms
         
         return startTradeLoop(fromIndex, toIndex);
     }
