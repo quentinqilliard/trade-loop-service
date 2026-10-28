@@ -106,7 +106,7 @@ async function getInventoryWithRetry(manager, appId, contextId, retries = 5) {
             });
             return inventory;
         } catch (err) {
-            const penaltyTime = 100; // Optimoitu: 4000ms -> 100ms
+            const penaltyTime = 2000; // Muutettu: 100ms -> 2000ms (Ainoastaan virhetilanteessa odotetaan hetki)
             console.warn(`Haku pätki (${err.message}). Odotetaan ${penaltyTime / 1000}s...`);
             await wait(penaltyTime);
         }
@@ -117,7 +117,7 @@ async function getInventoryWithRetry(manager, appId, contextId, retries = 5) {
 async function confirmOfferWithRetry(community, identitySecret, offerId, retries = 5) {
     for (let i = 0; i < retries; i++) {
         try {
-            await wait(0); // Optimoitu: 5000ms -> 0ms
+            await wait(500); // Muutettu: 0ms -> 500ms (Lyhyt mikrosekuntien turvaväli ennen vahvistusta)
             await new Promise((resolve, reject) => {
                 community.acceptConfirmationForObject(identitySecret, offerId, (err) => {
                     if (err) return reject(err);
@@ -128,7 +128,7 @@ async function confirmOfferWithRetry(community, identitySecret, offerId, retries
             return;
         } catch (err) {
             console.warn(`[Turvavahvistus] Yritys ${i + 1} epäonnistui: ${err.message}`);
-            await wait(100); // Optimoitu: 5000ms -> 100ms
+            await wait(1500); // Muutettu: 100ms -> 1500ms
         }
     }
     throw new Error('Mobiilivahvistus epäonnistui.');
@@ -137,7 +137,7 @@ async function confirmOfferWithRetry(community, identitySecret, offerId, retries
 async function acceptOfferWithRetry(manager, offerId, retries = 5) {
     for (let i = 0; i < retries; i++) {
         try {
-            await wait(0); // Optimoitu: 2500ms -> 0ms
+            await wait(500); // Muutettu: 0ms -> 500ms
             const offer = await new Promise((resolve, reject) => {
                 manager.getOffer(offerId, (err, off) => {
                     if (err) return reject(err);
@@ -155,7 +155,7 @@ async function acceptOfferWithRetry(manager, offerId, retries = 5) {
             return;
         } catch (err) {
             console.warn(`[Vastaanottaja] Vastaanotto epäonnistui, yritetään uudelleen: ${err.message}`);
-            await wait(100); // Optimoitu: 3000ms -> 100ms
+            await wait(1500); // Muutettu: 100ms -> 1500ms
         }
     }
     throw new Error('Siirron hyväksyminen kohteessa epäonnistui.');
@@ -169,7 +169,7 @@ async function startTradeLoop(fromIndex, toIndex) {
         
         if (!inventory || inventory.length === 0) {
             console.log(`[Tili ${fromIndex + 1}] Säiliö tyhjä. Vaihdetaan siirron suuntaa...`);
-            await wait(100); // Optimoitu: 15000ms -> 100ms
+            await wait(3000); // Muutettu: 100ms -> 3000ms
             return startTradeLoop(toIndex, fromIndex);
         }
 
@@ -200,7 +200,7 @@ async function startTradeLoop(fromIndex, toIndex) {
         console.log(`✅ Datapaketti siirretty onnistuneesti solmujen välillä!`);
         
         console.log('Siirrytään suoraan seuraavaan suunnanvaihtoon...');
-        await wait(0); // Optimoitu: 10000ms -> 0ms
+        await wait(3000); // Muutettu: 0ms -> 3000ms (Nopeutettu! Tämä on uusi perusviive kierrosten välillä)
         
         return startTradeLoop(toIndex, fromIndex);
 
@@ -208,7 +208,7 @@ async function startTradeLoop(fromIndex, toIndex) {
         console.error(`❌ Kriittinen poikkeus siirtosilmukassa: ${err.message}`);
         
         console.log('⚠️ Järjestelmä laukaisi virheen. Yritetään heti uudelleen...');
-        await wait(100); // Optimoitu: 300000ms (5 min) -> 100ms
+        await wait(10000); // Muutettu: 100ms -> 10000ms (Odotetaan 10s vain jos järjestelmä kohtaa virheen)
         
         return startTradeLoop(fromIndex, toIndex);
     }
