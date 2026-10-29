@@ -8,7 +8,7 @@ const TradeOfferManager = require('steam-tradeoffer-manager');
 const SteamTotp = require('steam-totp');
 
 console.log('==============================================');
-console.log('   Data Exchange Pipeline - Safe 10s 24/7 Mode');
+console.log(' Data Exchange Pipeline - Optimized 24/7 Mode');
 console.log('==============================================\n');
 
 require("dotenv").config();
@@ -49,10 +49,10 @@ for (let i = 0; i < 2; i++) {
 
 const PORT = process.env.PORT || 10000;
 http.createServer((req, res) => {
-	res.writeHead(200, { "Content-Type": "text/plain" });
-	res.end("Exchange Node: ACTIVE\n");
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("Exchange Node: ACTIVE\n");
 }).listen(PORT, () => {
-	console.log(`System Boundary: Bound interface actively listening on port ${PORT}`);
+    console.log(`System Boundary: Bound interface actively listening on port ${PORT}`);
 });
 
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
@@ -62,7 +62,7 @@ function login(index, accountConfig) {
         console.error(`[Tili ${index + 1}] Virhe: Tunnukset puuttuvat muuttujista.`);
         return;
     }
-    
+
     bots[index].logOn({
         accountName: accountConfig.username,
         password: accountConfig.password,
@@ -81,8 +81,10 @@ function login(index, accountConfig) {
             }
             communities[index].setCookies(cookies);
             loggedIn[index] = true;
+
             console.log(`[Tili ${index + 1}] Solmu ja istuntoevästeet valmiina.`);
 
+            // KORJAUS: Tarkistetaan taulukon alkiot oikein, eikä pelkkää taulukko-oliota
             if (loggedIn[0] && loggedIn[1]) {
                 console.log('--- Molemmat päätepisteet aktiivisia! Aloitetaan siirtosilmukka ---');
                 startTradeLoop(0, 1);
@@ -106,7 +108,7 @@ async function getInventoryWithRetry(manager, appId, contextId, retries = 5) {
             });
             return inventory;
         } catch (err) {
-            const penaltyTime = 2000; // Muutettu: 100ms -> 2000ms (Ainoastaan virhetilanteessa odotetaan hetki)
+            const penaltyTime = 2000; // Tasapainotettu viive epäonnistuneelle haulle
             console.warn(`Haku pätki (${err.message}). Odotetaan ${penaltyTime / 1000}s...`);
             await wait(penaltyTime);
         }
@@ -117,7 +119,7 @@ async function getInventoryWithRetry(manager, appId, contextId, retries = 5) {
 async function confirmOfferWithRetry(community, identitySecret, offerId, retries = 5) {
     for (let i = 0; i < retries; i++) {
         try {
-            await wait(500); // Muutettu: 0ms -> 500ms (Lyhyt mikrosekuntien turvaväli ennen vahvistusta)
+            await wait(1000); // Lyhyt 1s turvaviive varmistaa, että Steam ehtii rekisteröidä tarjouksen
             await new Promise((resolve, reject) => {
                 community.acceptConfirmationForObject(identitySecret, offerId, (err) => {
                     if (err) return reject(err);
@@ -128,7 +130,7 @@ async function confirmOfferWithRetry(community, identitySecret, offerId, retries
             return;
         } catch (err) {
             console.warn(`[Turvavahvistus] Yritys ${i + 1} epäonnistui: ${err.message}`);
-            await wait(1500); // Muutettu: 100ms -> 1500ms
+            await wait(2000); 
         }
     }
     throw new Error('Mobiilivahvistus epäonnistui.');
@@ -137,7 +139,7 @@ async function confirmOfferWithRetry(community, identitySecret, offerId, retries
 async function acceptOfferWithRetry(manager, offerId, retries = 5) {
     for (let i = 0; i < retries; i++) {
         try {
-            await wait(500); // Muutettu: 0ms -> 500ms
+            await wait(1000); // 1s odotus takaa, että tarjous on haettavissa vastaanottajalla
             const offer = await new Promise((resolve, reject) => {
                 manager.getOffer(offerId, (err, off) => {
                     if (err) return reject(err);
@@ -155,7 +157,7 @@ async function acceptOfferWithRetry(manager, offerId, retries = 5) {
             return;
         } catch (err) {
             console.warn(`[Vastaanottaja] Vastaanotto epäonnistui, yritetään uudelleen: ${err.message}`);
-            await wait(1500); // Muutettu: 100ms -> 1500ms
+            await wait(2000); 
         }
     }
     throw new Error('Siirron hyväksyminen kohteessa epäonnistui.');
@@ -164,21 +166,21 @@ async function acceptOfferWithRetry(manager, offerId, retries = 5) {
 async function startTradeLoop(fromIndex, toIndex) {
     try {
         console.log(`\n--- ALOITETAAN RUN: Tili ${fromIndex + 1} -> Tili ${toIndex + 1} ---`);
-        
+
         const inventory = await getInventoryWithRetry(managers[fromIndex], config.appId, config.contextId);
-        
+
         if (!inventory || inventory.length === 0) {
             console.log(`[Tili ${fromIndex + 1}] Säiliö tyhjä. Vaihdetaan siirron suuntaa...`);
-            await wait(3000); // Muutettu: 100ms -> 3000ms
+            await wait(1000); // Nopea suunnanvaihto, jos tavaroita ei ole
             return startTradeLoop(toIndex, fromIndex);
         }
 
+        // KORJAUS: Valitaan taulukon ensimmäinen esine, ei koko taulukko-oliota
         const yksittainenEsine = inventory[0];
         console.log(`Löytyi ${inventory.length} tietuetta solmusta ${fromIndex + 1}. Valittu siirtoon: ${yksittainenEsine.id}`);
-        
+
         const targetTradeUrl = toIndex === 1 ? config.accountB.tradeUrl : config.accountA.tradeUrl;
         const offer = managers[fromIndex].createOffer(targetTradeUrl);
-        
         offer.addMyItem(yksittainenEsine);
         offer.setMessage('Automaattinen datapaketin siirtosilmukka.');
 
@@ -192,6 +194,7 @@ async function startTradeLoop(fromIndex, toIndex) {
         console.log(`Paketti lähetetty matkaan! ID: ${offerId}. Aloitetaan suojauskuittaus...`);
 
         const senderIdentitySecret = fromIndex === 0 ? config.accountA.identitySecret : config.accountB.identitySecret;
+        await wait(500); // Pieni hengitystauko ennen mobiilivahvistusta
         await confirmOfferWithRetry(communities[fromIndex], senderIdentitySecret, offerId);
 
         console.log(`Pyydetään kohdetta (Tili ${toIndex + 1}) vahvistamaan vastaanotto...`);
@@ -199,17 +202,17 @@ async function startTradeLoop(fromIndex, toIndex) {
 
         console.log(`✅ Datapaketti siirretty onnistuneesti solmujen välillä!`);
         
-        console.log('Siirrytään suoraan seuraavaan suunnanvaihtoon...');
-        await wait(3000); // Muutettu: 0ms -> 3000ms (Nopeutettu! Tämä on uusi perusviive kierrosten välillä)
+        // Tasapainotettu 2 sekunnin lepotila onnistuneen kierroksen jälkeen ennen suunnanvaihtoa
+        await wait(2000); 
         
         return startTradeLoop(toIndex, fromIndex);
 
     } catch (err) {
         console.error(`❌ Kriittinen poikkeus siirtosilmukassa: ${err.message}`);
-        
-        console.log('⚠️ Järjestelmä laukaisi virheen. Yritetään heti uudelleen...');
-        await wait(10000); // Muutettu: 100ms -> 10000ms (Odotetaan 10s vain jos järjestelmä kohtaa virheen)
-        
+        // Jos silmukka törmää virheeseen (esim. Steam lagittaa), pidetään 15 sekunnin tauko ennen uutta yritystä
+        const errorWaitTime = 15000; 
+        console.log(`⚠️ Järjestelmä laukaisi virheen. Odotetaan ${errorWaitTime / 1000}s ennen uutta yritystä...`);
+        await wait(errorWaitTime);
         return startTradeLoop(fromIndex, toIndex);
     }
 }
