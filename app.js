@@ -8,10 +8,17 @@ const TradeOfferManager = require('steam-tradeoffer-manager');
 const SteamTotp = require('steam-totp');
 
 console.log('==============================================');
-console.log('   Data Exchange Pipeline - Safe 24/7 Mode');
+console.log('   Data Exchange Pipeline - Safe & Stable 24/7');
 console.log('==============================================\n');
 
 require("dotenv").config();
+
+// Konfiguraatiot ja vakiot malliesimerkin mukaisesti (millisekunteina)
+const CYCLE_DELAY_MS = 15000;          // Tauko onnistuneiden syklirundien välillä (Rate limit -suoja)
+const CYCLE_RETRY_WAIT_MS = 5000;       // Perusodotus yleisen virheen sattuessa
+const STEAM_ERROR_BASE_WAIT_MS = 10000; // Alkuviive Steamin tilapäisille häiriöille (kertautuu)
+const LONG_COOLDOWN_MS = 60000;         // Pitkä jäähdytys, jos virheitä tulee liikaa putkeen
+const MAX_CONSECUTIVE_FAILURES = 5;     // Maksimimäärä peräkkäisiä virheitä ennen inventaarion tarkistusta
 
 const config = {
     appId: parseInt(process.env.TARGET_APP_ID) || 440,
@@ -36,7 +43,9 @@ const bots = [];
 const communities = [];
 const managers = [];
 let loggedIn = [false, false];
+let loopRunning = false;
 
+// Alustetaan Steam-oliot
 for (let i = 0; i < 2; i++) {
     bots[i] = new SteamUser();
     communities[i] = new SteamCommunity();
@@ -47,15 +56,57 @@ for (let i = 0; i < 2; i++) {
     });
 }
 
+// Yksinkertainen HTTP-palvelin pitämään alustan (esim. Render/Heroku) käynnissä
 const PORT = process.env.PORT || 10000;
 http.createServer((req, res) => {
-	res.writeHead(200, { "Content-Type": "text/plain" });
-	res.end("Exchange Node: ACTIVE\n");
+    res.writeHead(200, { "Content-Type": "text/plain" });
+    res.end("Exchange Node: ACTIVE\n");
 }).listen(PORT, () => {
-	console.log(`System Boundary: Bound interface actively listening on port ${PORT}`);
+    console.log(`System Boundary: Bound interface actively listening on port ${PORT}`);
 });
 
 const wait = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+
+// Tunnistetaan Steamin tilapäiset virheet (EResult-koodit virheviesteissä)
+function isSteamTransientError(message) {
+    return (
+        message.includes('(26)') || // Timeout
+        message.includes('(11)') || // InvalidState
+        message.includes('(16)') || // Busy
+        message.includes('(20)') || // ServiceUnavailable
+        message.includes('Please try again later')
+    );
+}
+
+// Rekisteröidään tapahtumakuuntelijat VAIN KERRAN globaalisti
+for (let i = 0; i < 2; i++) {
+    bots[i].on('loggedOn', () => {
+        console.log(`[Tili ${i + 1}] Kirjauduttu sisään tietoverkkoon.`);
+    });
+
+    bots[i].on('webSession', (sessionID, cookies) => {
+        managers[i].setCookies(cookies, (err) => {
+            if (err) {
+                console.error(`[Tili ${i + 1}] Evästeiden asennus epäonnistui:`, err.message);
+                return;
+            }
+            communities[i].setCookies(cookies);
+            loggedIn[i] = true;
+            console.log(`[Tili ${i + 1}] Solmu ja istuntoevästeet valmiina.`);
+
+            if (loggedIn[0] && loggedIn[1] && !loopRunning) {
+                loopRunning = true;
+                console.log('--- Molemmat päätepisteet aktiivisia! Aloitetaan siirtosilmukka ---');
+                runTradeLoop();
+            }
+        });
+    });
+    
+    bots[i].on('error', (err) => {
+        console.error(`[Tili ${i + 1}] Steam-yhteysvirhe: ${err.message}`);
+        loggedIn[i] = false;
+    });
+}
 
 function login(index, accountConfig) {
     if (!accountConfig.username || !accountConfig.password) {
@@ -68,161 +119,171 @@ function login(index, accountConfig) {
         password: accountConfig.password,
         twoFactorCode: SteamTotp.generateAuthCode(accountConfig.sharedSecret)
     });
+}
 
-    bots[index].on('loggedOn', () => {
-        console.log(`[Tili ${index + 1}] Kirjauduttu sisään tietoverkkoon.`);
-    });
+// Käynnistetään kirjautumiset
+login(0, config.accountA);
+login(1, config.accountB);
 
-    bots[index].on('webSession', (sessionID, cookies) => {
-        managers[index].setCookies(cookies, (err) => {
-            if (err) {
-                console.error(`[Tili ${index + 1}] Evästeiden asennus epäonnistui:`, err.message);
-                return;
-            }
-            // Asetetaan evästeet community-oliolle ja jaetaan sessio
-            communities[index].setCookies(cookies);
-            
-            loggedIn[index] = true;
-            console.log(`[Tili ${index + 1}] Solmu ja istuntoevästeet valmiina.`);
+/* --- APUFUNKTIOT TRADEN KÄSITTELYYN --- */
 
-            if (loggedIn[0] && loggedIn[1]) {
-                console.log('--- Molemmat päätepisteet aktiivisia! Aloitetaan siirtosilmukka ---');
-                // Käynnistetään silmukka turvallisesti taustalla
-                runManager();
-            }
+async function getInventoryWithRetry(manager, appId, contextId) {
+    return new Promise((resolve, reject) => {
+        manager.getInventoryContents(appId, contextId, true, (err, inv) => {
+            if (err) return reject(err);
+            resolve(inv);
         });
     });
 }
 
-login(0, config.accountA);
-login(1, config.accountB);
-
-async function getInventoryWithRetry(manager, appId, contextId, retries = 5) {
-    for (let i = 0; i < retries; i++) {
-        try {
-            console.log(`Haetaan lohkon sisältöä... (Yritys ${i + 1}/${retries})`);
-            const inventory = await new Promise((resolve, reject) => {
-                manager.getInventoryContents(appId, contextId, true, (err, inv) => {
-                    if (err) return reject(err);
-                    resolve(inv);
-                });
-            });
-            return inventory;
-        } catch (err) {
-            const penaltyTime = 5000; // Palautettu turvalliseen 5 sekuntiin
-            console.warn(`Haku pätki (${err.message}). Odotetaan ${penaltyTime / 1000}s...`);
-            await wait(penaltyTime);
-        }
-    }
-    throw new Error('Tietueiden haku epäonnistui useista yrityksistä huolimatta.');
+async function sendTradeOffer(manager, tradeUrl, item) {
+    const offer = manager.createOffer(tradeUrl);
+    offer.addMyItem(item);
+    offer.setMessage('Automaattinen datapaketin siirtosilmukka.');
+    
+    return new Promise((resolve, reject) => {
+        offer.send((err) => {
+            if (err) return reject(err);
+            resolve(offer);
+        });
+    });
 }
 
-async function confirmOfferWithRetry(community, identitySecret, offerId, retries = 5) {
-    for (let i = 0; i < retries; i++) {
-        try {
-            await wait(3000); // Annetaan Steamille 3s aikaa rekisteröidä tarjous ennen vahvistusta
-            await new Promise((resolve, reject) => {
-                community.acceptConfirmationForObject(identitySecret, offerId, (err) => {
-                    if (err) return reject(err);
-                    resolve();
-                });
-            });
-            console.log(`[Turvavahvistus] Siirto ${offerId} kuitattu onnistuneesti suojaustunnuksella.`);
-            return;
-        } catch (err) {
-            console.warn(`[Turvavahvistus] Yritys ${i + 1} epäonnistui: ${err.message}`);
-            await wait(4000); 
-        }
-    }
-    throw new Error('Mobiilivahvistus epäonnistui.');
+async function confirmOfferWithRetry(community, identitySecret, offerId) {
+    return new Promise((resolve, reject) => {
+        community.acceptConfirmationForObject(identitySecret, offerId, (err) => {
+            if (err) return reject(err);
+            resolve();
+        });
+    });
 }
 
-async function acceptOfferWithRetry(manager, offerId, retries = 5) {
-    for (let i = 0; i < retries; i++) {
-        try {
-            await wait(3000); // Odotetaan hetki ennen hyväksyntää
-            const offer = await new Promise((resolve, reject) => {
-                manager.getOffer(offerId, (err, off) => {
-                    if (err) return reject(err);
-                    resolve(off);
-                });
-            });
+async function acceptIncomingOffer(manager, offerId) {
+    // Haetaan tarjous uudelleen vastaanottajan managerilla id:n perusteella
+    const offer = await new Promise((resolve, reject) => {
+        manager.getOffer(offerId, (err, off) => {
+            if (err) return reject(err);
+            resolve(off);
+        });
+    });
 
-            await new Promise((resolve, reject) => {
-                offer.accept((err) => {
-                    if (err) return reject(err);
-                    resolve();
-                });
-            });
-            console.log(`[Vastaanottaja] Siirto ${offerId} hyväksytty kohteessa.`);
-            return;
-        } catch (err) {
-            console.warn(`[Vastaanottaja] Vastaanotto epäonnistui, yritetään uudelleen: ${err.message}`);
-            await wait(4000); 
-        }
-    }
-    throw new Error('Siirron hyväksyminen kohteessa epäonnistui.');
+    return new Promise((resolve, reject) => {
+        offer.accept((err, status) => {
+            if (err) return reject(err);
+            resolve(status);
+        });
+    });
 }
 
-// Turvallinen pääsilmukka ilman rekursiovaaraa
-async function runManager() {
-    let fromIndex = 0;
-    let toIndex = 1;
+/* --- PÄÄSIIRTOSILMUKKA (Vastaa uutta arkkitehtuuria) --- */
 
-    while (true) {
+async function runTradeLoop() {
+    let currentHolderIdx = 0;
+    let currentReceiverIdx = 1;
+    let targetAssetId = null;
+    let cycleCount = 0;
+    let consecutiveFailures = 0;
+
+    while (loopRunning) {
         try {
-            console.log(`\n--- ALOITETAAN RUN: Tili ${fromIndex + 1} -> Tili ${toIndex + 1} ---`);
+            // Jos kohde-esinettä ei ole määritetty tai takana on virheitä, tarkistetaan inventaariot
+            if (!targetAssetId) {
+                console.log('Alustetaan siirrettävä esine inventaariosta...');
+                const invA = await getInventoryWithRetry(managers[0], config.appId, config.contextId);
+                const invB = await getInventoryWithRetry(managers[1], config.appId, config.contextId);
+
+                if (invA && invA.length > 0) {
+                    targetAssetId = invA[0].id;
+                    currentHolderIdx = 0;
+                    currentReceiverIdx = 1;
+                } else if (invB && invB.length > 0) {
+                    targetAssetId = invB[0].id;
+                    currentHolderIdx = 1;
+                    currentReceiverIdx = 0;
+                } else {
+                    throw new Error('Molemmat inventaariot ovat tyhjiä! Odotetaan tavaroita.');
+                }
+                console.log(`Esine valittu! AssetID: ${targetAssetId} paikassa Tili ${currentHolderIdx + 1}`);
+            }
+
+            cycleCount++;
+            console.log(`\n--- Sykli #${cycleCount}: Tili ${currentHolderIdx + 1} → Tili ${currentReceiverIdx + 1} [AssetID=${targetAssetId}] ---`);
+
+            // Vaihe 1: Lähetetään tarjous esineenhaltijan puolelta
+            const activeManager = managers[currentHolderIdx];
+            const targetTradeUrl = currentReceiverIdx === 1 ? config.accountB.tradeUrl : config.accountA.tradeUrl;
             
-            const inventory = await getInventoryWithRetry(managers[fromIndex], config.appId, config.contextId);
+            const dummyItem = { id: targetAssetId, appid: config.appId, contextid: config.contextId };
+            const offer = await sendTradeOffer(activeManager, targetTradeUrl, dummyItem);
+            const offerId = offer.id;
+            console.log(`Tarjous lähetetty matkaan. ID: ${offerId}. Aloitetaan mobiilivahvistus...`);
+
+            // Vaihe 2: Mobiilivahvistus (2FA) esineenhaltijan puolelta
+            const activeCommunity = communities[currentHolderIdx];
+            const identitySecret = currentHolderIdx === 0 ? config.accountA.identitySecret : config.accountB.identitySecret;
+            await confirmOfferWithRetry(activeCommunity, identitySecret, offerId);
+            console.log(`[Turvavahvistus] Tarjous ${offerId} kuitattu 2FA-tunnuksella.`);
+
+            // Vaihe 3: Vastaanottaja hyväksyy tarjouksen
+            console.log(`Pyydetään kohdetta (Tili ${currentReceiverIdx + 1}) hyväksymään tarjous...`);
+            await acceptIncomingOffer(managers[currentReceiverIdx], offerId);
+            console.log(`[Vastaanottaja] Tarjous ${offerId} hyväksytty onnistuneesti.`);
+
+            // Etsitään uusi assetid vastaanottajan puolelta, koska id muuttuu aina trade-tapahtumassa
+            await wait(2000); // Lyhyt odotus, jotta Steam päivittää inventaarion siirron jälkeen
+            const receiverInv = await getInventoryWithRetry(managers[currentReceiverIdx], config.appId, config.contextId);
             
-            if (!inventory || inventory.length === 0) {
-                console.log(`[Tili ${fromIndex + 1}] Säiliö tyhjä. Vaihdetaan siirron suuntaa...`);
-                await wait(5000); // Odotetaan hetki ennen suunnanvaihtoa, ettei spämmitä tyhjää inventaariota
-                // Vaihdetaan suuntaa
-                let temp = fromIndex;
-                fromIndex = toIndex;
-                toIndex = temp;
+            // Haetaan siirretty esine (etsitään esim. saman classid:n tai muiden tietojen pohjalta, tai poimitaan listan kärki)
+            if (receiverInv && receiverInv.length > 0) {
+                // Koska kyseessä on ping-pong -silmukka yhdellä/samoilla esineillä, otetaan uusi id suoraan ensimmäisestä
+                targetAssetId = receiverInv[0].id;
+            } else {
+                targetAssetId = null; // Pakottaa täyden uudelleentarkistuksen seuraavalla kierroksella
+            }
+
+            console.log(`✅ Sykli #${cycleCount} valmis! Tavaroiden uusi AssetID: ${targetAssetId}`);
+            consecutiveFailures = 0;
+
+            // Roolien vaihto seuraavaa kierrosta varten (Ping-Pong)
+            const prevHolder = currentHolderIdx;
+            // Roolien vaihto seuraavaa kierrosta varten (Ping-Pong)
+            const prevHolder = currentHolderIdx;
+            currentHolderIdx = currentReceiverIdx;
+            currentReceiverIdx = prevHolder;
+
+            // Turvallinen viive syklitapahtumien välillä
+            console.log(`Odotetaan ${CYCLE_DELAY_MS / 1000}s ennen seuraavaa sykliä...`);
+            await wait(CYCLE_DELAY_MS);
+
+        } catch (err) {
+            const message = err.message || String(err);
+            console.error(`❌ Sykli epäonnistui virheeseen: ${message}`);
+
+            if (message.includes('429') || message.includes('Rate limit')) {
+                console.error('🛑 Steamin Rate Limit havaittu! Pysäytetään botti IP-bannien välttämiseksi.');
+                loopRunning = false;
+                break;
+            }
+
+            consecutiveFailures++;
+            targetAssetId = null; // Nollataan assetid virheen sattuessa, jotta inventaariot skannataan uudelleen
+
+            // Jos liikaa peräkkäisiä virheitä, siirrytään pitkään jäähdytykseen
+            if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+                console.warn(`⚠️ Olet saavuttanut ${consecutiveFailures} peräkkäistä virhettä. Aloitetaan pitkä jäähdytys (${LONG_COOLDOWN_MS / 1000}s)...`);
+                await wait(LONG_COOLDOWN_MS);
+                consecutiveFailures = 0;
                 continue;
             }
 
-            const yksittainenEsine = inventory[0];
-            console.log(`Löytyi ${inventory.length} tietuetta solmusta ${fromIndex + 1}. Valittu siirtoon: ${yksittainenEsine.id}`);
-            
-            const targetTradeUrl = toIndex === 1 ? config.accountB.tradeUrl : config.accountA.tradeUrl;
-            const offer = managers[fromIndex].createOffer(targetTradeUrl);
-            
-            offer.addMyItem(yksittainenEsine);
-            offer.setMessage('Automaattinen datapaketin siirtosilmukka.');
+            // Progressiivinen eksponentiaalinen backoff-viive Steamin tilapäisille virheille
+            const isSteamError = isSteamTransientError(message);
+            const waitMs = isSteamError
+                ? STEAM_ERROR_BASE_WAIT_MS * Math.pow(2, Math.min(consecutiveFailures - 1, 3))
+                : CYCLE_RETRY_WAIT_MS;
 
-            const offerId = await new Promise((resolve, reject) => {
-                offer.send((err) => {
-                    if (err) return reject(err);
-                    resolve(offer.id);
-                });
-            });
-
-            console.log(`Paketti lähetetty matkaan! ID: ${offerId}. Aloitetaan suojauskuittaus...`);
-
-            const senderIdentitySecret = fromIndex === 0 ? config.accountA.identitySecret : config.accountB.identitySecret;
-            await confirmOfferWithRetry(communities[fromIndex], senderIdentitySecret, offerId);
-
-            console.log(`Pyydetään kohdetta (Tili ${toIndex + 1}) vahvistamaan vastaanotto...`);
-            await acceptOfferWithRetry(managers[toIndex], offerId);
-
-            console.log(`✅ Datapaketti siirretty onnistuneesti solmujen välillä!`);
-            
-            console.log('Odotetaan turvaväli ennen seuraavaa siirtoa...');
-            await wait(10000); // 10 sekunnin pakollinen tauko siirtojen välillä suojatakseen tilejä
-            
-            // Vaihdetaan suuntaa onnistuneen siirron jälkeen
-            let temp = fromIndex;
-            fromIndex = toIndex;
-            toIndex = temp;
-
-        } catch (err) {
-            console.error(`❌ Kriittinen poikkeus siirtosilmukassa: ${err.message}`);
-            console.log('⚠️ Järjestelmä laukaisi virheen. Odotetaan 30 sekuntia ennen turvallista uudelleenkäynnistystä...');
-            await wait(30000); // Jos tulee virhe (esim Rate Limit), pidetään kunnon tauko
+            console.warn(`Odotetaan ${Math.round(waitMs / 1000)}s ennen uutta yritystä (Virheet: ${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES})...`);
+            await wait(waitMs);
         }
     }
 }
